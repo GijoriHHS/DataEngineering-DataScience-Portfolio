@@ -1,205 +1,245 @@
 import pygame
 import numpy as np
 import random
-import time
+from pygame.locals import *
 
-# Initialize PyGame
-pygame.init()
+# Constants
+GRID_SIZE = 6
+CELL_SIZE = 80
+MARGIN = 50
+WINDOW_WIDTH = GRID_SIZE * CELL_SIZE * 2 + MARGIN * 3
+WINDOW_HEIGHT = GRID_SIZE * CELL_SIZE + MARGIN * 2
 
-class GridWorld:
-    def __init__(self, size=5):
-        self.size = size  # Grid size (e.g., 5x5)
-        self.grid = self.initialize_grid()  # Create the grid
-        self.agent_pos = [0, 0]  # Starting position (top-left corner)
-        self.goal_pos = [size-1, size-1]  # Goal at bottom-right
-        self.actions = ['up', 'down', 'left', 'right']  # Possible actions
+# Colors
+BACKGROUND = (30, 30, 50)
+WALL_COLOR = (50, 50, 70)
+PLAYER_COLOR = (70, 130, 180)
+GOAL_COLOR = (50, 180, 80)
+HAZARD_COLOR = (220, 80, 60)
+TEXT_COLOR = (220, 220, 220)
+Q_VALUE_COLOR = (180, 180, 250)
 
-    def initialize_grid(self):
-        # Create a 5x5 grid filled with zeros (empty spaces)
-        grid = np.zeros((self.size, self.size), dtype=int)
-        # Add walls (example positions, you can customize)
-        grid[1, 1] = 1
-        grid[2, 2] = 1
-        grid[3, 1] = 1
-        # Add hazard
-        grid[2, 1] = 2
-        # Add goal
-        grid[self.size-1, self.size-1] = 3
-        return grid
+# Rewards
+GOAL_REWARD = 100
+HAZARD_PENALTY = -50
+STEP_PENALTY = -1
 
-    def reset(self):
-        # Reset agent to starting position
-        self.agent_pos = [0, 0]
-        return self.agent_pos
+# Maze layout (0=path, 1=wall, 2=hazard, 3=goal)
+MAZE_LAYOUT = [
+    [0, 0, 1, 0, 0, 0],
+    [1, 0, 1, 0, 2, 0],
+    [0, 0, 0, 0, 1, 3],
+    [0, 1, 1, 0, 1, 0],
+    [0, 2, 0, 0, 0, 0],
+    [0, 1, 0, 1, 0, 0]
+]
 
-    def is_valid_move(self, pos):
-        row, col = pos
-        # Check if move is within grid bounds
-        if row < 0 or row >= self.size or col < 0 or col >= self.size:
-            return False
-        # Check if move is into a wall
-        if self.grid[row, col] == 1:
-            return False
-        return True
-
-    def move_agent(self, action):
-        # Calculate new position based on action
-        new_pos = self.agent_pos.copy()
-        if action == 'up':
-            new_pos[0] -= 1
-        elif action == 'down':
-            new_pos[0] += 1
-        elif action == 'left':
-            new_pos[1] -= 1
-        elif action == 'right':
-            new_pos[1] += 1
-
-        # Check if the move is valid
-        if self.is_valid_move(new_pos):
-            self.agent_pos = new_pos
-        # Return current position, reward, and whether goal is reached
-        reward = self.calculate_reward(self.agent_pos)
-        done = self.grid[self.agent_pos[0], self.agent_pos[1]] == 3
-        return self.agent_pos, reward, done
-
-    def calculate_reward(self, pos):
-        row, col = pos
-        if self.grid[row, col] == 2:  # Hazard
-            return -10
-        elif self.grid[row, col] == 3:  # Goal
-            return 100
-        return -1  # Small penalty for each step to encourage efficiency    
+class MazeGame:
+    def __init__(self):
+        pygame.init()
+        self.screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
+        pygame.display.set_caption("Maze Q-Learning")
+        self.clock = pygame.time.Clock()
+        self.font = pygame.font.SysFont('Arial', 16)
+        
+        self.grid = np.array(MAZE_LAYOUT)
+        self.player_pos = [0, 0]
+        self.goal_pos = self.find_goal()
+        self.mode = "manual"  # or "training"
+        self.running = True
+        self.episode_count = 0
+        
+        # Q-learning parameters
+        self.q_table = np.zeros((GRID_SIZE, GRID_SIZE, 4))  # (x, y, action)
+        self.learning_rate = 0.1
+        self.discount_factor = 0.9
+        self.epsilon = 0.9
+        self.min_epsilon = 0.1
+        self.training_speed = 10  # episodes per frame
     
-class QLearningAgent:
-    def __init__(self, env, learning_rate=0.1, discount_factor=0.9, epsilon=0.1):
-        self.env = env  # Reference to the GridWorld environment
-        self.lr = learning_rate  # Learning rate (alpha)
-        self.gamma = discount_factor  # Discount factor (gamma)
-        self.epsilon = epsilon  # Exploration rate for epsilon-greedy
-        self.q_table = np.zeros((env.size, env.size, len(env.actions)))  # Q-table: size x size x actions
-        self.actions = env.actions  # List of actions
-
+    def find_goal(self):
+        for x in range(GRID_SIZE):
+            for y in range(GRID_SIZE):
+                if self.grid[x, y] == 3:
+                    return [x, y]
+        return [0, 0]  # Fallback
+    
+    def reset(self):
+        self.player_pos = [0, 0]
+        return tuple(self.player_pos)
+    
+    def step(self, action):
+        x, y = self.player_pos
+        new_x, new_y = x, y
+        
+        # 0=up, 1=right, 2=down, 3=left
+        if action == 0 and x > 0: new_x = x - 1
+        elif action == 1 and y < GRID_SIZE-1: new_y = y + 1
+        elif action == 2 and x < GRID_SIZE-1: new_x = x + 1
+        elif action == 3 and y > 0: new_y = y - 1
+        
+        # Check if move is valid (not a wall)
+        if self.grid[new_x, new_y] != 1:
+            self.player_pos = [new_x, new_y]
+        
+        # Check if player reached goal or hazard
+        cell_value = self.grid[self.player_pos[0], self.player_pos[1]]
+        if cell_value == 3:  # Goal
+            reward = GOAL_REWARD
+            done = True
+        elif cell_value == 2:  # Hazard
+            reward = HAZARD_PENALTY
+            done = True
+        else:  # Path
+            reward = STEP_PENALTY
+            done = False
+        
+        if done:
+            self.reset()
+            self.episode_count += 1
+        
+        return tuple(self.player_pos), reward, done
+    
     def choose_action(self, state):
-        # Epsilon-greedy action selection
         if random.random() < self.epsilon:
-            # Exploration: choose a random action
-            return random.choice(self.actions)
+            return random.randint(0, 3)  # Random action
         else:
-            # Exploitation: choose the action with the highest Q-value
-            row, col = state
-            return self.actions[np.argmax(self.q_table[row, col])]
-
-    def update_q_value(self, state, action, reward, next_state):
-        # Convert action to index
-        action_idx = self.actions.index(action)
-        row, col = state
-        next_row, next_col = next_state
-        # Q-Learning update rule
-        current_q = self.q_table[row, col, action_idx]
-        max_next_q = np.max(self.q_table[next_row, next_col])
-        new_q = current_q + self.lr * (reward + self.gamma * max_next_q - current_q)
-        self.q_table[row, col, action_idx] = new_q
-
-class GameRenderer:
-    def __init__(self, env, agent, cell_size=50):
-        self.env = env
-        self.agent = agent
-        self.cell_size = cell_size
-        self.screen_width = env.size * cell_size * 2  # Double for Q-value grid
-        self.screen_height = env.size * cell_size
-        self.screen = pygame.display.set_mode((self.screen_width, self.screen_height))
-        pygame.display.set_caption("Q-Learning Grid World")
-        self.font = pygame.font.SysFont('arial', 12)
-        self.colors = {
-            0: (200, 200, 200),  # Empty: Gray
-            1: (0, 0, 0),       # Wall: Black
-            2: (255, 0, 0),     # Hazard: Red
-            3: (0, 255, 0)      # Goal: Green
-        }
-        self.agent_color = (0, 0, 255)  # Agent: Blue
-
-    def render(self):
-        self.screen.fill((255, 255, 255))  # White background
-
-        # Draw the grid world
-        for row in range(self.env.size):
-            for col in range(self.env.size):
-                cell_type = self.env.grid[row, col]
-                pygame.draw.rect(self.screen, self.colors[cell_type],
-                                (col * self.cell_size, row * self.cell_size,
-                                 self.cell_size, self.cell_size))
-                pygame.draw.rect(self.screen, (0, 0, 0),
-                                (col * self.cell_size, row * self.cell_size,
-                                 self.cell_size, self.cell_size), 1)
-
-        # Draw the agent
-        agent_row, agent_col = self.env.agent_pos
-        pygame.draw.circle(self.screen, self.agent_color,
-                          (agent_col * self.cell_size + self.cell_size // 2,
-                           agent_row * self.cell_size + self.cell_size // 2),
-                           self.cell_size // 3)
-
-        # Draw Q-values
-        for row in range(self.env.size):
-            for col in range(self.env.size):
-                for action_idx, action in enumerate(self.agent.actions):
-                    q_value = self.agent.q_table[row, col, action_idx]
-                    text = self.font.render(f"{q_value:.1f}", True, (0, 0, 0))
-                    x = (self.env.size + col) * self.cell_size
-                    y = row * self.cell_size + (action_idx + 1) * (self.cell_size // 5)
-                    self.screen.blit(text, (x, y))
-
-        pygame.display.flip()
-
-def main():
-    env = GridWorld(size=5)
-    agent = QLearningAgent(env, learning_rate=0.1, discount_factor=0.9, epsilon=0.1)
-    renderer = GameRenderer(env, agent)
-    running = True
-    manual_mode = True
-
-    while running:
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                running = False
-            elif event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_SPACE:  # Start training
-                    manual_mode = False
-                    train_agent(env, agent, renderer, episodes=1000)
-                    manual_mode = True
-                elif event.key == pygame.K_r:  # Reset environment
-                    env.reset()
-                elif manual_mode and event.type == pygame.KEYDOWN:
-                    action = None
-                    if event.key == pygame.K_UP:
-                        action = 'up'
-                    elif event.key == pygame.K_DOWN:
-                        action = 'down'
-                    elif event.key == pygame.K_LEFT:
-                        action = 'left'
-                    elif event.key == pygame.K_RIGHT:
-                        action = 'right'
-                    if action:
-                        env.move_agent(action)
-                        renderer.render()
-
-        if manual_mode:
-            renderer.render()
-
-    pygame.quit()
-
-def train_agent(env, agent, renderer, episodes=1000):
-    for episode in range(episodes):
-        state = env.reset()
+            x, y = state
+            return np.argmax(self.q_table[x, y])  # Best action
+    
+    def update_q_table(self, state, action, reward, next_state):
+        x, y = state
+        next_x, next_y = next_state
+        best_next = np.max(self.q_table[next_x, next_y])
+        
+        # Q-learning formula
+        self.q_table[x, y, action] += self.learning_rate * (
+            reward + self.discount_factor * best_next - self.q_table[x, y, action]
+        )
+    
+    def train_episode(self):
+        state = self.reset()
         done = False
+        
         while not done:
-            action = agent.choose_action(state)
-            next_state, reward, done = env.move_agent(action)
-            agent.update_q_value(state, action, reward, next_state)
+            action = self.choose_action(state)
+            next_state, reward, done = self.step(action)
+            self.update_q_table(state, action, reward, next_state)
             state = next_state
-            renderer.render()
-            time.sleep(0.05)  # Slow down to visualize
-        print(f"Episode {episode + 1}/{episodes} completed")
+        
+        # Reduce exploration over time
+        self.epsilon = max(self.min_epsilon, self.epsilon * 0.999)
+    
+    def handle_events(self):
+        for event in pygame.event.get():
+            if event.type == QUIT:
+                self.running = False
+            
+            elif event.type == KEYDOWN:
+                if event.key == K_ESCAPE:
+                    self.running = False
+                elif event.key == K_t:
+                    self.mode = "training"
+                elif event.key == K_m:
+                    self.mode = "manual"
+                elif event.key == K_r:
+                    self.reset()
+                    self.episode_count = 0
+                    self.q_table = np.zeros((GRID_SIZE, GRID_SIZE, 4))
+                    self.epsilon = 0.9
+                elif event.key == K_PLUS or event.key == K_EQUALS:
+                    self.training_speed = min(100, self.training_speed + 5)
+                elif event.key == K_MINUS:
+                    self.training_speed = max(1, self.training_speed - 5)
+                
+                if self.mode == "manual":
+                    if event.key == K_UP: self.step(0)
+                    elif event.key == K_RIGHT: self.step(1)
+                    elif event.key == K_DOWN: self.step(2)
+                    elif event.key == K_LEFT: self.step(3)
+    
+    def update(self):
+        if self.mode == "training":
+            for _ in range(self.training_speed):
+                self.train_episode()
+    
+    def draw(self):
+        self.screen.fill(BACKGROUND)
+        
+        # Draw main grid (environment)
+        for x in range(GRID_SIZE):
+            for y in range(GRID_SIZE):
+                rect = pygame.Rect(
+                    MARGIN + y * CELL_SIZE,
+                    MARGIN + x * CELL_SIZE,
+                    CELL_SIZE, CELL_SIZE
+                )
+                
+                # Cell color
+                if self.grid[x, y] == 1:  # Wall
+                    pygame.draw.rect(self.screen, WALL_COLOR, rect)
+                elif self.grid[x, y] == 2:  # Hazard
+                    pygame.draw.rect(self.screen, HAZARD_COLOR, rect)
+                elif self.grid[x, y] == 3:  # Goal
+                    pygame.draw.rect(self.screen, GOAL_COLOR, rect)
+                
+                # Grid lines
+                pygame.draw.rect(self.screen, (60, 60, 80), rect, 1)
+                
+                # Player
+                if x == self.player_pos[0] and y == self.player_pos[1]:
+                    pygame.draw.circle(
+                        self.screen, PLAYER_COLOR,
+                        (MARGIN + y * CELL_SIZE + CELL_SIZE//2, 
+                         MARGIN + x * CELL_SIZE + CELL_SIZE//2),
+                        CELL_SIZE//3
+                    )
+        
+        # Draw Q-value grid
+        for x in range(GRID_SIZE):
+            for y in range(GRID_SIZE):
+                rect = pygame.Rect(
+                    MARGIN * 2 + GRID_SIZE * CELL_SIZE + y * CELL_SIZE,
+                    MARGIN + x * CELL_SIZE,
+                    CELL_SIZE, CELL_SIZE
+                )
+                
+                # Background
+                pygame.draw.rect(self.screen, (40, 40, 60), rect)
+                pygame.draw.rect(self.screen, (60, 60, 80), rect, 1)
+                
+                # Q-values
+                max_q = np.max(self.q_table[x, y])
+                if max_q != 0:  # Only draw if we have values
+                    q_text = self.font.render(f"{max_q:.1f}", True, Q_VALUE_COLOR)
+                    self.screen.blit(q_text, (rect.x + 5, rect.y + 5))
+        
+        # Draw stats
+        mode_text = self.font.render(f"Mode: {self.mode}", True, TEXT_COLOR)
+        episode_text = self.font.render(f"Episodes: {self.episode_count}", True, TEXT_COLOR)
+        epsilon_text = self.font.render(f"Epsilon: {self.epsilon:.2f}", True, TEXT_COLOR)
+        speed_text = self.font.render(f"Speed: {self.training_speed}", True, TEXT_COLOR)
+        controls_text = self.font.render("Controls: T=Train, M=Manual, R=Reset", True, TEXT_COLOR)
+        controls_text2 = self.font.render("+/-=Speed, Arrows=Move", True, TEXT_COLOR)
+        
+        self.screen.blit(mode_text, (MARGIN, WINDOW_HEIGHT - MARGIN + 10))
+        self.screen.blit(episode_text, (MARGIN, WINDOW_HEIGHT - MARGIN + 30))
+        self.screen.blit(epsilon_text, (MARGIN, WINDOW_HEIGHT - MARGIN + 50))
+        self.screen.blit(speed_text, (MARGIN + 200, WINDOW_HEIGHT - MARGIN + 10))
+        self.screen.blit(controls_text, (MARGIN + 200, WINDOW_HEIGHT - MARGIN + 30))
+        self.screen.blit(controls_text2, (MARGIN + 200, WINDOW_HEIGHT - MARGIN + 50))
+        
+        pygame.display.flip()
+    
+    def run(self):
+        while self.running:
+            self.handle_events()
+            self.update()
+            self.draw()
+            self.clock.tick(60)
+        
+        pygame.quit()
 
 if __name__ == "__main__":
-    main()
+    game = MazeGame()
+    game.run()
