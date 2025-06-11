@@ -1,22 +1,22 @@
 import pygame
 import numpy as np
 import random
+import os
 
 # Constanten
 GRID_SIZE = 6
-CELL_SIZE = 80
+CELL_SIZE = 125
 MARGIN = 30
 WINDOW_WIDTH = GRID_SIZE * CELL_SIZE * 2 + MARGIN * 3
 WINDOW_HEIGHT = GRID_SIZE * CELL_SIZE + MARGIN * 2 + 80
 
 # Kleuren
 BACKGROUND = (30, 30, 50)
-WALL_COLOR = (55, 55, 75)
-PLAYER_COLOR = (70, 130, 180)
+WALL_COLOR = (85, 85, 98)
 GOAL_COLOR = (50, 180, 80)
 HAZARD_COLOR = (220, 80, 60)
 TEXT_COLOR = (220, 220, 220)
-ARROW_COLOR = (255, 255, 100)
+Q_VALUE_COLOR = (255, 255, 100)
 
 # Maze (0=pad, 1=muur, 2=gevaar, 3=doel)
 MAZE = [
@@ -28,17 +28,58 @@ MAZE = [
     [0, 1, 0, 1, 0, 0]
 ]
 
+DIRECTIONS = ['Up', 'Right', 'Down', 'Left']
+
+class PlayerSprite:
+    def __init__(self, sprite_folder, cell_size):
+        self.images = {}
+        for dir_name in DIRECTIONS:
+            path = os.path.join(sprite_folder, f"{dir_name}.png")
+            img = pygame.image.load(path).convert_alpha()
+            self.images[dir_name] = pygame.transform.smoothscale(img, (cell_size-10, cell_size-10))
+        self.direction = 'Down'
+
+    def set_direction(self, action):
+        self.direction = DIRECTIONS[action]
+
+    def draw(self, surface, center):
+        img = self.images[self.direction]
+        rect = img.get_rect(center=center)
+        surface.blit(img, rect)
+
+class TileSprites:
+    def __init__(self, sprite_folder, cell_size):
+        finish_path = os.path.join(sprite_folder, "Finish.png")
+        hazard_path = os.path.join(sprite_folder, "Hazard.png")
+        self.finish = pygame.image.load(finish_path).convert_alpha()
+        self.finish = pygame.transform.smoothscale(self.finish, (cell_size-8, cell_size-8))
+        self.hazard = pygame.image.load(hazard_path).convert_alpha()
+        self.hazard = pygame.transform.smoothscale(self.hazard, (cell_size-8, cell_size-8))
+
 class SimpleMaze:
     def __init__(self):
         pygame.init()
         self.screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
         pygame.display.set_caption("Q-Learning Maze")
-        self.font = pygame.font.SysFont('Arial', 14)
+        self.font = pygame.font.SysFont('Arial', 10)  # Kleinere font voor 4 waarden
         
         self.grid = np.array(MAZE)
         self.player_pos = [0, 0]
         self.mode = "manual"
         self.episodes = 0
+
+        try:
+            sprite_folder = os.path.join(os.path.dirname(__file__), 'Sprites')
+        except NameError:
+            sprite_folder = os.path.join(os.getcwd(), 'Sprites')
+            
+        if not os.path.exists(sprite_folder):
+            print(f"Sprites map niet gevonden op: {sprite_folder}")
+            print("Zorg dat de Sprites map in dezelfde directory staat als je notebook")
+
+        self.player_sprite = PlayerSprite(sprite_folder, CELL_SIZE)
+        self.tile_sprites = TileSprites(sprite_folder, CELL_SIZE)
+        self.last_action = 2  # DOWN
         
         # Q-learning
         self.q_table = np.zeros((GRID_SIZE, GRID_SIZE, 4))
@@ -56,6 +97,8 @@ class SimpleMaze:
         
     def reset(self):
         self.player_pos = [0, 0]
+        self.last_action = 2
+        self.player_sprite.set_direction(self.last_action)
         return tuple(self.player_pos)
     
     def move(self, action):
@@ -67,6 +110,8 @@ class SimpleMaze:
         if (0 <= new_x < GRID_SIZE and 0 <= new_y < GRID_SIZE and 
             self.grid[new_x, new_y] != 1):
             self.player_pos = [new_x, new_y]
+            self.last_action = action
+            self.player_sprite.set_direction(action)
         
         cell = self.grid[self.player_pos[0], self.player_pos[1]]
         if cell == 3: return 100, True
@@ -89,7 +134,6 @@ class SimpleMaze:
         )
     
     def training_step(self):
-        """Nieuwe architectuur - batch processing zoals eerste code"""
         current_time = pygame.time.get_ticks()
         
         if self.episode_done:
@@ -98,10 +142,9 @@ class SimpleMaze:
             self.last_step_time = current_time
             return
         
-        # Bereken hoeveel stappen we moeten nemen 
         delay_ms = 1000 / self.steps_per_second
         elapsed = current_time - self.last_step_time
-        steps_to_take = min(50, int(elapsed / delay_ms))  # Max 50 per frame
+        steps_to_take = min(50, int(elapsed / delay_ms))
         
         if steps_to_take > 0:
             for _ in range(steps_to_take):
@@ -120,29 +163,38 @@ class SimpleMaze:
             
             self.last_step_time = current_time
     
-    def draw_arrow(self, surface, center, direction, strength):
-        if strength <= 0:
-            return
-            
-        arrow_size = max(8, min(20, int(strength * 2)))
-        directions = [(0, -arrow_size), (arrow_size, 0), (0, arrow_size), (-arrow_size, 0)]
+    def draw_q_values(self, surface, rect, q_values):
+        """Tekent alle 4 Q-waarden in de juiste posities binnen een tile"""
+        # Posities: Up, Right, Down, Left
+        positions = [
+            (rect.centerx, rect.y + 8),      # Up - boven in het midden
+            (rect.right - 25, rect.centery), # Right - rechts in het midden  
+            (rect.centerx, rect.bottom - 15), # Down - beneden in het midden
+            (rect.x + 8, rect.centery)       # Left - links in het midden
+        ]
         
-        if direction < len(directions):
-            dx, dy = directions[direction]
-            end_pos = (center[0] + dx, center[1] + dy)
-            pygame.draw.line(surface, ARROW_COLOR, center, end_pos, 2)
-            
-            # Pijlpunt
-            if direction == 0:
-                points = [end_pos, (end_pos[0]-4, end_pos[1]+6), (end_pos[0]+4, end_pos[1]+6)]
-            elif direction == 1:
-                points = [end_pos, (end_pos[0]-6, end_pos[1]-4), (end_pos[0]-6, end_pos[1]+4)]
-            elif direction == 2:
-                points = [end_pos, (end_pos[0]-4, end_pos[1]-6), (end_pos[0]+4, end_pos[1]-6)]
-            else:
-                points = [end_pos, (end_pos[0]+6, end_pos[1]-4), (end_pos[0]+6, end_pos[1]+4)]
-            
-            pygame.draw.polygon(surface, ARROW_COLOR, points)
+        # Kleur bepalen op basis van waarde (groen voor positief, rood voor negatief)
+        for i, (q_value, pos) in enumerate(zip(q_values, positions)):
+            if abs(q_value) > 0.01:  # Alleen tonen als waarde significant is
+                # Kleur bepalen
+                if q_value > 0:
+                    color = (100, 255, 100)  # Groen voor positieve waarden
+                elif q_value < 0:
+                    color = (255, 100, 100)  # Rood voor negatieve waarden
+                else:
+                    color = Q_VALUE_COLOR     # Geel voor neutrale waarden
+                
+                # Tekst renderen
+                text = self.font.render(f"{q_value:.1f}", True, color)
+                text_rect = text.get_rect()
+                
+                # Centreren op de positie
+                text_rect.center = pos
+                
+                # Zorgen dat tekst binnen de tile blijft
+                text_rect.clamp_ip(rect.inflate(-4, -4))
+                
+                surface.blit(text, text_rect)
     
     def handle_input(self):
         for event in pygame.event.get():
@@ -152,7 +204,7 @@ class SimpleMaze:
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_t:
                     self.mode = "training"
-                    self.episode_done = True  # Start fresh episode
+                    self.episode_done = True
                 elif event.key == pygame.K_m:
                     self.mode = "manual"
                     self.reset()
@@ -189,33 +241,31 @@ class SimpleMaze:
                     )
                     
                     if grid_offset == 0:  # Linker grid: maze
-                        if self.grid[x, y] == 1: color = WALL_COLOR
-                        elif self.grid[x, y] == 2: color = HAZARD_COLOR
-                        elif self.grid[x, y] == 3: color = GOAL_COLOR
-                        else: color = BACKGROUND
+                        # Eerst de juiste achtergrondkleur tekenen
+                        if self.grid[x, y] == 1:
+                            pygame.draw.rect(self.screen, WALL_COLOR, rect)
+                        elif self.grid[x, y] == 2:
+                            pygame.draw.rect(self.screen, HAZARD_COLOR, rect)  
+                            self.screen.blit(self.tile_sprites.hazard, rect.inflate(-8, -8))
+                        elif self.grid[x, y] == 3:
+                            pygame.draw.rect(self.screen, GOAL_COLOR, rect)  
+                            self.screen.blit(self.tile_sprites.finish, rect.inflate(-8, -8))
+                        else:
+                            pygame.draw.rect(self.screen, BACKGROUND, rect)
                         
-                        pygame.draw.rect(self.screen, color, rect)
-                        pygame.draw.rect(self.screen, (80, 80, 100), rect, 1)  
+                        pygame.draw.rect(self.screen, (110, 110, 130), rect, 1)  
 
-                        
+                        # Player tekenen als sprite
                         if x == self.player_pos[0] and y == self.player_pos[1]:
-                            pygame.draw.circle(self.screen, PLAYER_COLOR, 
-                                             rect.center, CELL_SIZE//4)
+                            self.player_sprite.draw(self.screen, rect.center)
                     
                     else:  # Rechter grid: Q-waarden
                         pygame.draw.rect(self.screen, (40, 40, 60), rect)
-                        pygame.draw.rect(self.screen, (80, 80, 100), rect, 1)  
+                        pygame.draw.rect(self.screen, (110, 110, 130), rect, 1)   
 
-                        
-                        if self.grid[x, y] != 1:
+                        if self.grid[x, y] != 1:  # Geen Q-waarden voor muren
                             q_values = self.q_table[x, y]
-                            max_q = np.max(q_values)
-                            best_action = np.argmax(q_values)
-                            
-                            if max_q > 0:
-                                self.draw_arrow(self.screen, rect.center, best_action, max_q / 10)
-                                text = self.font.render(f"{max_q:.1f}", True, TEXT_COLOR)
-                                self.screen.blit(text, (rect.x + 5, rect.y + 5))
+                            self.draw_q_values(self.screen, rect, q_values)
         
         # UI info
         info_y = MARGIN + GRID_SIZE * CELL_SIZE + 10
@@ -237,7 +287,7 @@ class SimpleMaze:
             running = self.handle_input()
             
             if self.mode == "training":
-                self.training_step()  # Nieuwe batch processing methode
+                self.training_step()
             
             self.draw()
             clock.tick(60)
