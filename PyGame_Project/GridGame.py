@@ -5,7 +5,7 @@ import os
 
 # Constanten
 GRID_SIZE = 6
-CELL_SIZE = 125
+CELL_SIZE = 115
 MARGIN = 30
 WINDOW_WIDTH = GRID_SIZE * CELL_SIZE * 2 + MARGIN * 3
 WINDOW_HEIGHT = GRID_SIZE * CELL_SIZE + MARGIN * 2 + 80
@@ -17,7 +17,6 @@ GOAL_COLOR = (50, 180, 80)
 HAZARD_COLOR = (220, 80, 60)
 TEXT_COLOR = (220, 220, 220)
 Q_VALUE_COLOR = (255, 255, 100)
-
 
 # Maze layout
 MAZE = [
@@ -73,7 +72,7 @@ class SimpleMaze:
         self.player_pos = [0, 0]
         self.mode = "manual"
         self.episodes = 0
-        self.wins = 0  # Toegevoegd voor winrate
+        self.wins = 0 
         try:
             sprite_folder = os.path.join(os.path.dirname(__file__), 'Sprites')
         except NameError:
@@ -167,7 +166,7 @@ class SimpleMaze:
                 if done:
                     self.episode_done = True
                     self.episodes += 1
-                    if reward == 100:  # Toegevoegd voor winrate
+                    if reward == 100:  
                         self.wins += 1
                     self.epsilon = max(0.1, self.epsilon * 0.999)
                     break
@@ -273,7 +272,7 @@ class SimpleMaze:
                             self.draw_q_values(self.screen, rect, q_values)
         
         info_y = MARGIN + GRID_SIZE * CELL_SIZE + 10
-        winrate = (self.wins / self.episodes) * 100 if self.episodes > 0 else 0  # Toegevoegd voor winrate
+        winrate = (self.wins / self.episodes) * 100 if self.episodes > 0 else 0  
         info = f"Mode: {self.mode} | Episodes: {self.episodes} | Wins: {self.wins} | Winrate: {winrate:.2f}% | Speed: {self.steps_per_second} steps/sec | Exploration: {self.epsilon*100:.2f}%"  # Toegevoegd voor winrate
         text = self.font.render(info, True, TEXT_COLOR)
         self.screen.blit(text, (MARGIN, info_y))
